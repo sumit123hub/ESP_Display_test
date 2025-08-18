@@ -1,3 +1,8 @@
+// Simple snake game using TFT_eSPI
+// Upload this file adjusting the parameters according to your need
+
+
+
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <TFT_eSPI.h>
