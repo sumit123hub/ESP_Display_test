@@ -1,233 +1,111 @@
-// Simple snake game using TFT_eSPI
-// Upload this file adjusting the parameters according to your need
+// Example for library:
+// https://github.com/Bodmer/TJpg_Decoder
 
+// This example renders a Jpeg file that is stored in an array within Flash (program) memory
+// see panda.h tab.  The panda image file being ~13Kbytes.
 
+#define USE_DMA
 
-#include <SPI.h>
-#include <XPT2046_Touchscreen.h>
-#include <TFT_eSPI.h>
-#include <vector>
+// Include the array
+#include "panda.h"
 
-// Touch Screen pins
-#define XPT2046_IRQ 36
-#define XPT2046_MOSI 32
-#define XPT2046_MISO 39
-#define XPT2046_CLK 25
-#define XPT2046_CS 33
+// Include the jpeg decoder library
+#include <TJpg_Decoder.h>
 
-SPIClass mySpi = SPIClass(VSPI);
-XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
-TFT_eSPI tft = TFT_eSPI();
+#ifdef USE_DMA
+  uint16_t  dmaBuffer1[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
+  uint16_t  dmaBuffer2[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
+  uint16_t* dmaBufferPtr = dmaBuffer1;
+  bool dmaBufferSel = 0;
+#endif
 
-// Game constants
-const int SCREEN_WIDTH = 320;
-const int SCREEN_HEIGHT = 240;
-const int SNAKE_SIZE = 10;
-const int FOOD_SIZE = 10;
-const int UPDATE_INTERVAL = 75;  // ms
-const int REFRESH_SIZE = 5;
+// Include the TFT library https://github.com/Bodmer/TFT_eSPI
+#include "SPI.h"
+#include <TFT_eSPI.h>              // Hardware-specific library
+TFT_eSPI tft = TFT_eSPI();         // Invoke custom library
 
-// Game structures
-struct Point {
-    int x, y;
-};
+// This next function will be called during decoding of the jpeg file to render each
+// 16x16 or 8x8 image tile (Minimum Coding Unit) to the TFT.
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
+{
+   // Stop further decoding as image is running off bottom of screen
+  if ( y >= tft.height() ) return 0;
 
-// Game state
-Point direction = {1, 0};  // Start moving right
-Point nextDirection = {1, 0};
-std::vector<Point> snake;
-Point food;
-bool gameOver = false;
-bool scoreUpdated = false;
-unsigned long lastUpdateTime = 0;
-int score = 0;
-int highScore = 0;
-
-void drawGame() {
-    // tft.fillScreen(TFT_BLACK);
-    
-    // Draw food
-    tft.fillRect(food.x, food.y, FOOD_SIZE, FOOD_SIZE, TFT_GREEN);
-    
-    // Draw snake
-    for (size_t i = 0; i < snake.size(); i++) {
-        if (i == 0) {
-            // Snake head
-            tft.fillRect(snake[i].x, snake[i].y, SNAKE_SIZE, SNAKE_SIZE, TFT_RED);
-        } else {
-            // Snake body
-            tft.fillRect(snake[i].x, snake[i].y, SNAKE_SIZE, SNAKE_SIZE, TFT_WHITE);
-        }
-    }
-    
-    // Draw score
-    tft.setTextSize(1);
-    if(scoreUpdated)
-    {
-        tft.setTextColor(TFT_BLACK);
-        tft.setCursor(5, 5);
-        tft.print("Score: ");
-        tft.print(score - 1);
-        scoreUpdated = false;
-    }
-    tft.setTextColor(TFT_YELLOW);
-    tft.setCursor(5, 5);
-    tft.print("Score: ");
-    tft.print(score);
-
-    tft.setCursor(SCREEN_WIDTH - 80, 5);
-    tft.print("High: ");
-    tft.print(highScore);
+  // STM32F767 processor takes 43ms just to decode (and not draw) jpeg (-Os compile option)
+  // Total time to decode and also draw to TFT:
+  // SPI 54MHz=71ms, with DMA 50ms, 71-43 = 28ms spent drawing, so DMA is complete before next MCU block is ready
+  // Apparent performance benefit of DMA = 71/50 = 42%, 50 - 43 = 7ms lost elsewhere
+  // SPI 27MHz=95ms, with DMA 52ms. 95-43 = 52ms spent drawing, so DMA is *just* complete before next MCU block is ready!
+  // Apparent performance benefit of DMA = 95/52 = 83%, 52 - 43 = 9ms lost elsewhere
+#ifdef USE_DMA
+  // Double buffering is used, the bitmap is copied to the buffer by pushImageDMA() the
+  // bitmap can then be updated by the jpeg decoder while DMA is in progress
+  if (dmaBufferSel) dmaBufferPtr = dmaBuffer2;
+  else dmaBufferPtr = dmaBuffer1;
+  dmaBufferSel = !dmaBufferSel; // Toggle buffer selection
+  //  pushImageDMA() will clip the image block at screen boundaries before initiating DMA
+  tft.pushImageDMA(x, y, w, h, bitmap, dmaBufferPtr); // Initiate DMA - blocking only if last DMA is not complete
+  // The DMA transfer of image block to the TFT is now in progress...
+#else
+  // Non-DMA blocking alternative
+  tft.pushImage(x, y, w, h, bitmap);  // Blocking, so only returns when image block is drawn
+#endif
+  // Return 1 to decode next block.
+  return 1;
 }
 
-void spawnFood() {
-    bool onSnake;
-    do {
-        onSnake = false;
-        food.x = random(SNAKE_SIZE, SCREEN_WIDTH - FOOD_SIZE) / SNAKE_SIZE * SNAKE_SIZE;
-        food.y = random(SNAKE_SIZE, SCREEN_HEIGHT - FOOD_SIZE) / SNAKE_SIZE * SNAKE_SIZE;
-        
-        for (const auto& segment : snake) {
-            if (food.x == segment.x && food.y == segment.y) {
-                onSnake = true;
-                break;
-            }
-        }
-    } while (onSnake);
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println("\n\n Testing TJpg_Decoder library");
+
+  // Initialise the TFT
+  tft.begin();
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.fillScreen(TFT_BLACK);
+
+#ifdef USE_DMA
+  tft.initDMA(); // To use SPI DMA you must call initDMA() to setup the DMA engine
+#endif
+
+  // The jpeg image can be scaled down by a factor of 1, 2, 4, or 8
+  TJpgDec.setJpgScale(1);
+
+  // The colour byte order can be swapped by the decoder
+  // using TJpgDec.setSwapBytes(true); or by the TFT_eSPI library:
+  tft.setSwapBytes(true);
+
+  // The decoder must be given the exact name of the rendering function above
+  TJpgDec.setCallback(tft_output);
 }
 
-void resetGame() {
-    snake.clear();
-    snake.push_back({SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2});
-    snake.push_back({SCREEN_WIDTH / 2 - SNAKE_SIZE, SCREEN_HEIGHT / 2});
-    snake.push_back({SCREEN_WIDTH / 2 - 2 * SNAKE_SIZE, SCREEN_HEIGHT / 2});
-    
-    direction = {1, 0};
-    nextDirection = {1, 0};
-    gameOver = false;
-    score = 0;
-    
-    spawnFood();
-    drawGame();
-}
-
-void setup() {
-    Serial.begin(115200);
-
-    // Initialize touch screen
-    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-    ts.begin(mySpi);
-    ts.setRotation(1);
-
-    // Initialize display
-    tft.init();
-    tft.setRotation(1);
-    tft.fillScreen(TFT_BLACK);
-
-    // Initialize game
-    resetGame();
-}
-
-void processInput() {
-    if (ts.tirqTouched() && ts.touched()) {
-        TS_Point p = ts.getPoint();
-        
-        if (p.x < 1000 && p.y > 1000 && p.y < 3000 && direction.x != 1) {
-            nextDirection = {-1, 0};  // Left
-        }
-        else if (p.x > 3000 && p.y > 1000 && p.y < 3000 && direction.x != -1) {
-            nextDirection = {1, 0};   // Right
-        }
-        else if (p.x > 1000 && p.x < 3000 && p.y < 1000 && direction.y != 1) {
-            nextDirection = {0, -1};  // Up
-        }
-        else if (p.x > 1000 && p.x < 3000 && p.y > 3000 && direction.y != -1) {
-            nextDirection = {0, 1};   // Down
-        }
-    }
-}
-
-void updateGame() {
-    // Apply buffered direction
-    direction = nextDirection;
-
-    // Calculate new head position
-    Point newHead = {
-        snake[0].x + direction.x * SNAKE_SIZE,
-        snake[0].y + direction.y * SNAKE_SIZE
-    };
-
-    // Wall collision (warp around)
-    if (newHead.x < 0) newHead.x = SCREEN_WIDTH - SNAKE_SIZE;
-    else if (newHead.x >= SCREEN_WIDTH) newHead.x = 0;
-    if (newHead.y < 0) newHead.y = SCREEN_HEIGHT - SNAKE_SIZE;
-    else if (newHead.y >= SCREEN_HEIGHT) newHead.y = 0;
-
-    // Self collision detection
-    for (size_t i = 0; i < snake.size(); i++) {
-        if (newHead.x == snake[i].x && newHead.y == snake[i].y) {
-            gameOver = true;
-            if (score > highScore) highScore = score;
-            return;
-        }
-    }
-
-    // Add new head
-    snake.insert(snake.begin(), newHead);
-
-    // Food collection
-    if (newHead.x == food.x && newHead.y == food.y) {
-        score++;
-        scoreUpdated = true;
-        spawnFood();
-    } else {
-        // Remove tail if no food was eaten
-        tft.fillRect(snake[snake.size() - 1].x, snake[snake.size() - 1].y, SNAKE_SIZE, SNAKE_SIZE, TFT_BLACK);
-        snake.pop_back();
-    }
-}
+void loop()
+{
+  // Show a contrasting colour for demo of draw speed
+  tft.fillScreen(TFT_RED);
 
 
-void drawGameOver() {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_RED);
-    tft.setTextSize(2);
-    tft.setCursor(SCREEN_WIDTH / 2 - 70, SCREEN_HEIGHT / 2 - 20);
-    tft.print("GAME OVER");
-    
-    tft.setTextColor(TFT_YELLOW);
-    tft.setTextSize(1);
-    tft.setCursor(SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT / 2 + 10);
-    tft.print("Score: ");
-    tft.print(score);
-    
-    tft.setCursor(SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT / 2 + 30);
-    tft.print("High Score: ");
-    tft.print(highScore);
-    
-    tft.setTextColor(TFT_GREEN);
-    tft.setCursor(SCREEN_WIDTH / 2 - 80, SCREEN_HEIGHT / 2 + 60);
-    tft.print("Touch to Restart");
-}
+  // Get the width and height in pixels of the jpeg if you wish:
+  uint16_t w = 0, h = 0;
+  TJpgDec.getJpgSize(&w, &h, panda, sizeof(panda));
+  Serial.print("Width = "); Serial.print(w); Serial.print(", height = "); Serial.println(h);
 
-void loop() {
-    processInput();
-    
-    if (gameOver) {
-        if (ts.touched()) {
-            resetGame();
-        }
-        return;
-    }
-    
-    unsigned long currentTime = millis();
-    if (currentTime - lastUpdateTime >= UPDATE_INTERVAL) {
-        updateGame();
-        drawGame();
-        lastUpdateTime = currentTime;
-        
-        if (gameOver) {
-            drawGameOver();
-        }
-    }
+  // Time recorded for test purposes
+  uint32_t dt = millis();
+
+  // Must use startWrite first so TFT chip select stays low during DMA and SPI channel settings remain configured
+  tft.startWrite();
+
+  // Draw the image, top left at 0,0 - DMA request is handled in the call-back tft_output() in this sketch
+  TJpgDec.drawJpg(0, 0, panda, sizeof(panda));
+
+  // Must use endWrite to release the TFT chip select and release the SPI channel
+  tft.endWrite();
+
+  // How much time did rendering take (ESP8266 80MHz 262ms, 160MHz 149ms, ESP32 SPI 111ms, 8bit parallel 90ms
+  dt = millis() - dt;
+  Serial.print(dt); Serial.println(" ms");
+
+  // Wait before drawing again
+  delay(2000);
 }
