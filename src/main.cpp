@@ -1,112 +1,40 @@
-// Example for library:
-// https://github.com/Bodmer/TJpg_Decoder
+#include "nepal.h"
 
-// This example renders a Jpeg file that is stored in an array within Flash (program) memory
-// see panda.h tab.  The panda image file being ~13Kbytes.
+#include <Arduino.h>
+#include <SPI.h>
+#include <TFT_eSPI.h> // Hardware-specific library
 
-#define USE_DMA
+TFT_eSPI tft = TFT_eSPI();
 
-// Include the array
-#include "panda.h"
+// Frame buffer for one frame (RAM)
+// Using this technique will cause a huge issue as if you declare this much variables
+// then it will be stored in .bss section of ram which will store unintitialized values due to which compilation error will occur
+// there are many techniwues to work around this and one of them is same like jpeg image using tile buffering and dma and other similar ways.
 
-// Include the jpeg decoder library
-#include <TJpg_Decoder.h>
+uint16_t frameBuffer[50000]; // animation_width * animation_height
 
-#ifdef USE_DMA
-  uint16_t  dmaBuffer1[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
-  uint16_t  dmaBuffer2[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
-  uint16_t* dmaBufferPtr = dmaBuffer1;
-  bool dmaBufferSel = 0;
-#endif
 
-// Include the TFT library https://github.com/Bodmer/TFT_eSPI
-#include "SPI.h"
-#include <TFT_eSPI.h>              // Hardware-specific library
-TFT_eSPI tft = TFT_eSPI();         // Invoke custom library
 
-// This next function will be called during decoding of the jpeg file to render each
-// 16x16 or 8x8 image tile (Minimum Coding Unit) to the TFT.
-bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
-{
-   // Stop further decoding as image is running off bottom of screen
-  if ( y >= tft.height() ) return 0;
-
-  // STM32F767 processor takes 43ms just to decode (and not draw) jpeg (-Os compile option)
-  // Total time to decode and also draw to TFT:
-  // SPI 54MHz=71ms, with DMA 50ms, 71-43 = 28ms spent drawing, so DMA is complete before next MCU block is ready
-  // Apparent performance benefit of DMA = 71/50 = 42%, 50 - 43 = 7ms lost elsewhere
-  // SPI 27MHz=95ms, with DMA 52ms. 95-43 = 52ms spent drawing, so DMA is *just* complete before next MCU block is ready!
-  // Apparent performance benefit of DMA = 95/52 = 83%, 52 - 43 = 9ms lost elsewhere
-#ifdef USE_DMA
-  // Double buffering is used, the bitmap is copied to the buffer by pushImageDMA() the
-  // bitmap can then be updated by the jpeg decoder while DMA is in progress
-  if (dmaBufferSel) dmaBufferPtr = dmaBuffer2;
-  else dmaBufferPtr = dmaBuffer1;
-  dmaBufferSel = !dmaBufferSel; // Toggle buffer selection
-  //  pushImageDMA() will clip the image block at screen boundaries before initiating DMA
-  tft.pushImageDMA(x, y, w, h, bitmap, dmaBufferPtr); // Initiate DMA - blocking only if last DMA is not complete
-  // The DMA transfer of image block to the TFT is now in progress...
-#else
-  // Non-DMA blocking alternative
-  tft.pushImage(x, y, w, h, bitmap);  // Blocking, so only returns when image block is drawn
-#endif
-  // Return 1 to decode next block.
-  return 1;
-}
-
-void setup()
-{
+void setup() {
   Serial.begin(115200);
-  Serial.println("\n\n Testing TJpg_Decoder library");
-  // tft.setRotation(3);
-  // Initialise the TFT
-  tft.begin();
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.fillScreen(TFT_BLACK);
-
-#ifdef USE_DMA
-  tft.initDMA(); // To use SPI DMA you must call initDMA() to setup the DMA engine
-#endif
-
-  // The jpeg image can be scaled down by a factor of 1, 2, 4, or 8
-  TJpgDec.setJpgScale(1);
-
-  // The colour byte order can be swapped by the decoder
-  // using TJpgDec.setSwapBytes(true); or by the TFT_eSPI library:
+  tft.init();
+  tft.setRotation(3);
   tft.setSwapBytes(true);
-
-  // The decoder must be given the exact name of the rendering function above
-  TJpgDec.setCallback(tft_output);
+  tft.fillScreen(TFT_WHITE);
 }
 
-void loop()
-{
-  // Show a contrasting colour for demo of draw speed
-  // tft.fillScreen(TFT_RED);
+void loop() {
+  for (int i = 0; i < frames; i++) {
+    // Copy one frame from PROGMEM to RAM
+    // Dont try to directly push from progmem to display it wouldnt work as pushImage requires pointer to ram . Many libraries like TJpg_Decoder.h use this method. They first copy into tiles in the ram and use buffering to push them to the display using DMA
+    for (int j = 0; j < animation_width * animation_height; j++) {
+      frameBuffer[j] = pgm_read_word(&(frame[i][j]));
+    }
 
+    // Draw the frame at position (60, 15)
+    tft.pushImage(0, 0, animation_width, animation_height, frameBuffer);
 
-  // Get the width and height in pixels of the jpeg if you wish:
-  uint16_t w = 0, h = 0;
-  TJpgDec.getJpgSize(&w, &h, panda, sizeof(panda));
-  Serial.print("Width = "); Serial.print(w); Serial.print(", height = "); Serial.println(h);
-  Serial.println(tft.height());
-
-  // Time recorded for test purposes
-  uint32_t dt = millis();
-
-  // Must use startWrite first so TFT chip select stays low during DMA and SPI channel settings remain configured
-  tft.startWrite();
-
-  // Draw the image, top left at 0,0 - DMA request is handled in the call-back tft_output() in this sketch
-  TJpgDec.drawJpg(0, 0, panda, sizeof(panda));
-
-  // Must use endWrite to release the TFT chip select and release the SPI channel
-  tft.endWrite();
-
-  // How much time did rendering take (ESP8266 80MHz 262ms, 160MHz 149ms, ESP32 SPI 111ms, 8bit parallel 90ms
-  dt = millis() - dt;
-  Serial.print(dt); Serial.println(" ms");
-
-  // Wait before drawing again
-  delay(2000);
+    // Delay for ~25 FPS
+    delay(40);
+  }
 }
