@@ -58,7 +58,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("\n\n Testing TJpg_Decoder library");
-
+  // tft.setRotation(3);
   // Initialise the TFT
   tft.begin();
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -82,13 +82,14 @@ void setup()
 void loop()
 {
   // Show a contrasting colour for demo of draw speed
-  tft.fillScreen(TFT_RED);
+  // tft.fillScreen(TFT_RED);
 
 
   // Get the width and height in pixels of the jpeg if you wish:
   uint16_t w = 0, h = 0;
   TJpgDec.getJpgSize(&w, &h, panda, sizeof(panda));
   Serial.print("Width = "); Serial.print(w); Serial.print(", height = "); Serial.println(h);
+  Serial.println(tft.height());
 
   // Time recorded for test purposes
   uint32_t dt = millis();

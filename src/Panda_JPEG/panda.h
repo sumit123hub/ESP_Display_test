@@ -20,8 +20,24 @@
 
 
 */
+
+// This data are all in jpeg they arent yet converted to the raw pixels image data so we have to use jpeg library for that purpose.
+
 #include <stdint.h>
 #include <Arduino.h>
+
+// PROGMEM special kind
+// If you don’t use PROGMEM:
+
+// Your image/animation data is duplicated into RAM when the ESP boots → wastes precious RAM.
+
+// If you use PROGMEM:
+
+// The data stays in Flash only (program memory).
+
+// You manually read it with pgm_read_word, pgm_read_byte, etc. when you need it.
+
+// RAM is used only for what’s necessary (like your frameBuffer).
 
 const uint8_t panda[] PROGMEM = {
 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0xB4, 
