@@ -7,29 +7,31 @@
 #define USE_DMA
 
 // Include the array
-#include "JPEG_GIF.h"
+#include "messi.h"
+#include "MESSI/image_bytes.h"
 
 // Include the jpeg decoder library
 #include <TJpg_Decoder.h>
 
 #ifdef USE_DMA
-  uint16_t  dmaBuffer1[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
-  uint16_t  dmaBuffer2[16*16]; // Toggle buffer for 16*16 MCU block, 512bytes
-  uint16_t* dmaBufferPtr = dmaBuffer1;
-  bool dmaBufferSel = 0;
+uint16_t dmaBuffer1[16 * 16]; // Toggle buffer for 16*16 MCU block, 512bytes
+uint16_t dmaBuffer2[16 * 16]; // Toggle buffer for 16*16 MCU block, 512bytes
+uint16_t *dmaBufferPtr = dmaBuffer1;
+bool dmaBufferSel = 0;
 #endif
 
 // Include the TFT library https://github.com/Bodmer/TFT_eSPI
 #include "SPI.h"
-#include <TFT_eSPI.h>              // Hardware-specific library
-TFT_eSPI tft = TFT_eSPI();         // Invoke custom library
+#include <TFT_eSPI.h>      // Hardware-specific library
+TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
 
 // This next function will be called during decoding of the jpeg file to render each
 // 16x16 or 8x8 image tile (Minimum Coding Unit) to the TFT.
-bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 {
-   // Stop further decoding as image is running off bottom of screen
-  if ( y >= tft.height() ) return 0;
+  // Stop further decoding as image is running off bottom of screen
+  if (y >= tft.height())
+    return 0;
 
   // STM32F767 processor takes 43ms just to decode (and not draw) jpeg (-Os compile option)
   // Total time to decode and also draw to TFT:
@@ -40,15 +42,17 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
 #ifdef USE_DMA
   // Double buffering is used, the bitmap is copied to the buffer by pushImageDMA() the
   // bitmap can then be updated by the jpeg decoder while DMA is in progress
-  if (dmaBufferSel) dmaBufferPtr = dmaBuffer2;
-  else dmaBufferPtr = dmaBuffer1;
+  if (dmaBufferSel)
+    dmaBufferPtr = dmaBuffer2;
+  else
+    dmaBufferPtr = dmaBuffer1;
   dmaBufferSel = !dmaBufferSel; // Toggle buffer selection
   //  pushImageDMA() will clip the image block at screen boundaries before initiating DMA
   tft.pushImageDMA(x, y, w, h, bitmap, dmaBufferPtr); // Initiate DMA - blocking only if last DMA is not complete
   // The DMA transfer of image block to the TFT is now in progress...
 #else
   // Non-DMA blocking alternative
-  tft.pushImage(x, y, w, h, bitmap);  // Blocking, so only returns when image block is drawn
+  tft.pushImage(x, y, w, h, bitmap); // Blocking, so only returns when image block is drawn
 #endif
   // Return 1 to decode next block.
   return 1;
@@ -58,7 +62,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("\n\n Testing TJpg_Decoder library");
-  // tft.setRotation(3);
+  tft.setRotation(3);
   // Initialise the TFT
   tft.begin();
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -84,11 +88,13 @@ void loop()
   // Show a contrasting colour for demo of draw speed
   // tft.fillScreen(TFT_RED);
 
-
   // Get the width and height in pixels of the jpeg if you wish:
   uint16_t w = 0, h = 0;
-  TJpgDec.getJpgSize(&w, &h, panda[1], sizeof(panda[1]));
-  Serial.print("Width = "); Serial.print(w); Serial.print(", height = "); Serial.println(h);
+  TJpgDec.getJpgSize(&w, &h, panda, sizeof(panda));
+  Serial.print("Width = ");
+  Serial.print(w);
+  Serial.print(", height = ");
+  Serial.println(h);
   Serial.println(tft.height());
 
   // Time recorded for test purposes
@@ -98,11 +104,37 @@ void loop()
   tft.startWrite();
 
   // Draw the image, top left at 0,0 - DMA request is handled in the call-back tft_output() in this sketch
-  for (int i =0; i<2; i++){
-    TJpgDec.drawJpg(0, 0, panda[i], sizeof(panda[i]));
-    delay(1000);
-    tft.fillScreen(TFT_RED);
+  // for (int i =0; i<2; i++){
+  //   if (i==0){
+  //     TJpgDec.drawJpg(0, 0, panda, sizeof(panda));
+  //     delay(1000);
+  //     tft.fillScreen(TFT_RED);
+  //   }
+  //   else{
+  //     TJpgDec.drawJpg(0, 0, panda1, sizeof(panda1));
+  //     delay(1000);
+  //     tft.fillScreen(TFT_BLUE);
+  //   }
+  //   delay(1000);
 
+  // }
+
+  int a = 0;
+  for (int i = 0; i < imageCount; i++)
+  {
+    if (a == 24)
+    {
+      a = 0;
+    }
+    else
+    {
+      unsigned long startTime = millis();
+      TJpgDec.drawJpg(0, 0, imageList[i].data, imageList[i].size);
+      unsigned long elapsed = millis() - startTime; // End timer
+      Serial.printf("Frame %d rendered in %lu ms\n", i, elapsed);
+      a++;
+    }
+    // delay(10); // adjust speed
   }
 
   // Must use endWrite to release the TFT chip select and release the SPI channel
@@ -110,7 +142,8 @@ void loop()
 
   // How much time did rendering take (ESP8266 80MHz 262ms, 160MHz 149ms, ESP32 SPI 111ms, 8bit parallel 90ms
   dt = millis() - dt;
-  Serial.print(dt); Serial.println(" ms");
+  Serial.print(dt);
+  Serial.println(" ms");
 
   // Wait before drawing again
   delay(2000);
